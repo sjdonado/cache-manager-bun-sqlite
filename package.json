@@ -1,36 +1,23 @@
 {
-  "name": "cache-manager-sqlite",
-  "version": "0.3.0",
-  "description": "A modern SQLite store for node-cache-manager",
+  "name": "cache-manager-bun-sqlite",
+  "version": "0.1.0",
+  "description": "Bun sqlite store for node-cache-manager",
   "main": "index.js",
   "type": "module",
-  "scripts": {
-    "test": "nyc --reporter=html mocha"
-  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/maxpert/node-cache-manager-sqlite.git"
+    "url": "https://github.com/sjdonado/node-cache-manager-sqlite.git"
   },
   "keywords": [
     "cache-manager",
     "sqlite"
   ],
-  "author": [
-    "Zohaib Sibte Hassan",
-    "Juan Rodriguez"
-  ],
+  "author": "Juan Rodriguez",
   "license": "MIT",
   "dependencies": {
-    "cbor-x": "^1.5.9",
-    "sqlite3": "^5.1.7"
+    "cbor-x": "^1.5.9"
   },
   "devDependencies": {
-    "cache-manager": "^5.7.3",
-    "mocha": "^10.0.0",
-    "nyc": "^15.1.0",
-    "sinon": "^14.0.0"
-  },
-  "engines": {
-    "node": ">=12.0.0"
+    "cache-manager": "^5.7.3"
   }
 }

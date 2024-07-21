@@ -1,4 +1,4 @@
-import assert from 'assert';
+import { describe, it, expect } from 'bun:test';
 import cacheManager from 'cache-manager';
 
 import sqliteStore from '../index.js';
@@ -11,7 +11,7 @@ describe('cacheManager serializers', () => {
         });
 
         await cache.set('foo', { foo: 'bar', arr: [1, true, null] });
-        assert.deepEqual(await cache.get('foo'), { foo: 'bar', arr: [1, true, null] });
+        expect(await cache.get('foo')).toEqual({ foo: 'bar', arr: [1, true, null] });
     });
 
     it('supports JSON', async () => {
@@ -21,7 +21,7 @@ describe('cacheManager serializers', () => {
         });
 
         await cache.set('foo', { foo: 'bar', arr: [1, true, null] });
-        assert.deepEqual(await cache.get('foo'), { foo: 'bar', arr: [1, true, null] });
+        expect(await cache.get('foo')).toEqual({ foo: 'bar', arr: [1, true, null] });
     });
 });
 
@@ -42,7 +42,7 @@ describe('cacheManager custom serializers', () => {
         });
 
         await cache.set('foo', { foo: 'bar', arr: [1, true, null] });
-        assert.deepEqual(await cache.get('foo'), null);
+        expect(await cache.get('foo')).toBe(null);
     });
 
     it('bad deserializer returns null', async () => {
@@ -59,6 +59,6 @@ describe('cacheManager custom serializers', () => {
         });
 
         await cache.set('foo', { foo: 'bar', arr: [1, true, null] });
-        assert.deepEqual(await cache.get('foo'), null);
+        expect(await cache.get('foo')).toBe(null);
     });
 });

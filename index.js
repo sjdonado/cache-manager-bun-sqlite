@@ -1,14 +1,14 @@
-import sqlite3 from 'sqlite3';
+import { Database } from 'bun:sqlite';
 import util from 'util';
 import { decode, encode } from 'cbor-x';
 
-const ConfigurePragmas = `
+const configurePragmas = `
 PRAGMA main.synchronous = NORMAL;
 PRAGMA main.journal_mode = WAL2;
 PRAGMA main.auto_vacuum = INCREMENTAL;
 `;
 
-const CreateTableStatement = `
+const createTableStm = `
 CREATE TABLE IF NOT EXISTS %s (
     key TEXT PRIMARY KEY, 
     val BLOB, 
@@ -17,20 +17,6 @@ CREATE TABLE IF NOT EXISTS %s (
 );
 CREATE INDEX IF NOT EXISTS index_expire_%s ON %s(expire_at);
 `;
-
-const DeleteStatement = 'DELETE FROM %s WHERE key IN (%s)';
-const TruncateStatement = 'DELETE FROM %s';
-const PurgeExpiredStatement = 'DELETE FROM %s WHERE expire_at < $ts';
-const UpsertManyStatementPrefix =
-  'INSERT OR REPLACE INTO %s(key, val, created_at, expire_at) VALUES ';
-
-function now() {
-  return new Date().getTime();
-}
-
-function generatePlaceHolders(length) {
-  return '(' + '?'.repeat(length).split('').join(', ') + ')';
-}
 
 const serializers = {
   json: {
@@ -44,109 +30,104 @@ const serializers = {
 };
 
 class SqliteCacheStore {
-  constructor(config) {
-    const { name, path, serializer, ttl, flags, onOpen, onReady } = config;
+  constructor({ name, path, serializer, ttl, onOpen, onReady }) {
     this.name = name || 'cache';
     this.path = path || ':memory:';
     this.default_ttl = ttl || 24 * 60 * 60; // Default TTL in seconds
     this.serializer = serializers[serializer || 'cbor'];
-    const mode = flags || sqlite3.OPEN_CREATE | sqlite3.OPEN_READWRITE;
 
-    this.db = new sqlite3.Database(this.path, mode, err => {
-      if (err) {
-        if (onOpen) onOpen(err);
-        return;
-      }
-      this.db.serialize(() => {
-        const stmt =
-          ConfigurePragmas +
-          util.format(CreateTableStatement, this.name, this.name, this.name);
-        this.db.exec(stmt, err => {
-          if (onReady) onReady(err);
-        });
-      });
-      if (onOpen) onOpen(null);
-    });
+    this.db = new Database(this.path);
+
+    try {
+      this.db.exec(configurePragmas);
+      const stmt = util.format(createTableStm, this.name, this.name, this.name);
+      this.db.exec(stmt);
+
+      onReady?.();
+      onOpen?.();
+    } catch (err) {
+      onOpen?.(err);
+    }
 
     // Schedule periodic purge of expired entries
     setInterval(
       () => {
         this.purgeExpired();
       },
-      60 * 60 * 1000
-    ); // Every hour
+      60 * 60 * 1000 // Every hour
+    );
   }
 
-  async get(key, options) {
-    const ts = now();
-    const rows = await this._fetch_all([key]);
+  get(key, options) {
+    const ts = new Date().getTime();
+    const rows = this._fetchAll([key]);
     if (rows.length > 0 && rows[0].expire_at > ts) {
       return this._deserialize(rows[0].val);
     }
-    return undefined;
+    return null;
   }
 
-  async set(key, value, options) {
+  set(key, value, options = {}) {
     const ttl = (options.ttl || this.default_ttl) * 1000;
-    const ts = now();
+    const ts = new Date().getTime();
     const expire = ts + ttl;
     const val = this._serialize(value);
-    const stmt = util.format(
-      UpsertManyStatementPrefix + generatePlaceHolders(4),
-      this.name
-    );
-    await this._run(stmt, [key, val, ts, expire]);
+    const stmt = `INSERT OR REPLACE INTO ${this.name}(key, val, created_at, expire_at) VALUES (?, ?, ?, ?)`;
+    this.db.run(stmt, key, val, ts, expire);
   }
 
-  async del(key) {
-    const stmt = util.format(DeleteStatement, this.name, '?');
-    await this._run(stmt, [key]);
+  del(key) {
+    const stmt = `DELETE FROM ${this.name} WHERE key = ?`;
+    this.db.run(stmt, key);
   }
 
-  async reset() {
-    const stmt = util.format(TruncateStatement, this.name);
-    await this._run(stmt, {});
+  reset() {
+    const stmt = `DELETE FROM ${this.name}`;
+    this.db.run(stmt);
   }
 
-  async keys() {
+  keys() {
     const stmt = `SELECT key FROM ${this.name}`;
-    const rows = await this._all(stmt);
+    const rows = this.db.all(stmt);
     return rows.map(row => row.key);
   }
 
-  async mset(pairs, options) {
+  mset(pairs, options = {}) {
     const ttl = (options.ttl || this.default_ttl) * 1000;
-    const ts = now();
+    const ts = new Date().getTime();
     const expire = ts + ttl;
-    const bindings = pairs
-      .map(([key, value]) => [key, this._serialize(value), ts, expire])
-      .flat();
-    const placeholders = pairs.map(() => generatePlaceHolders(4)).join(', ');
-    const stmt = util.format(UpsertManyStatementPrefix + placeholders, this.name);
-    await this._run(stmt, bindings);
+    const bindings = pairs.flatMap(([key, value]) => [
+      key,
+      this._serialize(value),
+      ts,
+      expire,
+    ]);
+    const placeholders = pairs.map(() => '(?, ?, ?, ?)').join(', ');
+    const stmt = `INSERT OR REPLACE INTO ${this.name}(key, val, created_at, expire_at) VALUES ${placeholders}`;
+    this.db.run(stmt, ...bindings);
   }
 
-  async mget(...keys) {
-    const ts = now();
-    const rows = await this._fetch_all(keys);
-    return rows.map(row => (row.expire_at > ts ? this._deserialize(row.val) : undefined));
+  mget(...keys) {
+    const ts = new Date().getTime();
+    const rows = this._fetchAll(keys);
+    return rows.map(row => (row.expire_at > ts ? this._deserialize(row.val) : null));
   }
 
-  async mdel(...keys) {
+  mdel(...keys) {
     const placeholders = keys.map(() => '?').join(', ');
-    const stmt = util.format(DeleteStatement, this.name, placeholders);
-    await this._run(stmt, keys);
+    const stmt = `DELETE FROM ${this.name} WHERE key IN (${placeholders})`;
+    this.db.run(stmt, ...keys);
   }
 
-  async _fetch_all(keys) {
+  _fetchAll(keys) {
     const placeholders = keys.map(() => '?').join(', ');
     const stmt = `SELECT * FROM ${this.name} WHERE key IN (${placeholders})`;
-    return this._all(stmt, keys);
+    return this.db.all(stmt, ...keys);
   }
 
-  async purgeExpired() {
-    const stmt = util.format(PurgeExpiredStatement, this.name);
-    await this._run(stmt, { $ts: now() });
+  purgeExpired() {
+    const stmt = `DELETE FROM ${this.name} WHERE expire_at < ?`;
+    this.db.run(stmt, new Date().getTime());
   }
 
   _serialize(obj) {
@@ -163,24 +144,6 @@ class SqliteCacheStore {
     } catch (e) {
       return undefined;
     }
-  }
-
-  _run(stmt, params) {
-    return new Promise((resolve, reject) => {
-      this.db.run(stmt, params, err => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-  }
-
-  _all(stmt, params) {
-    return new Promise((resolve, reject) => {
-      this.db.all(stmt, params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
   }
 }
 

@@ -1,7 +1,5 @@
-import assert from 'assert';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'bun:test';
 import cacheManager from 'cache-manager';
-import sinon from 'sinon';
-import sqlite3 from 'sqlite3';
 
 import sqliteStore from '../index.js';
 
@@ -35,7 +33,7 @@ describe('cacheManager promised', () => {
 
     it('set should serialized bad object to undefined', async () => {
         await cache.set('foo-bad', function() { });
-        assert.strictEqual(await cache.get('foo-bad'), undefined);
+        expect(await cache.get('foo-bad')).toBe(undefined);
     });
 
     it('get value when TTL within range from set', async () => {
@@ -44,7 +42,7 @@ describe('cacheManager promised', () => {
 
         await cache.set(key, valu, { ttl: -200 });
         const val = await cache.get(key);
-        assert.strictEqual(val, undefined);
+        expect(val).toBe(undefined);
     });
 
     it('should read saved value', async () => {
@@ -53,13 +51,14 @@ describe('cacheManager promised', () => {
 
         await cache.set(key, valu);
         const val = await cache.get(key);
-        assert.deepEqual(val, valu);
+        expect(val).toEqual(valu);
     });
 
     it('does not error on del non-existent key', async () => {
         const key = 'foo' + new Date().getTime();
 
         await cache.del(key);
+        // No assertion needed, just ensure it does not throw
     });
 
     it('removes existing key with del', async () => {
@@ -69,7 +68,7 @@ describe('cacheManager promised', () => {
         await cache.set(key, valu);
         await cache.del(key);
         const v = await cache.get(key);
-        assert.strictEqual(v, undefined);
+        expect(v).toBe(undefined);
     });
 
     it('truncates database on reset', async () => {
@@ -79,7 +78,7 @@ describe('cacheManager promised', () => {
         await cache.set(key, valu);
         await cache.reset();
         const v = await cache.get(key);
-        assert.strictEqual(v, undefined);
+        expect(v).toBe(undefined);
     });
 
     it('returns ttl of key', async () => {
@@ -88,13 +87,13 @@ describe('cacheManager promised', () => {
 
         await cache.set(key, valu);
         const v = await cache.ttl(key);
-        assert(v > 0);
+        expect(v).toBeGreaterThan(0);
     });
 
     it('returns ttl a negative value for non-existent keys', async () => {
         const key = 'foo' + new Date().getTime();
         const v = await cache.ttl(key);
-        assert(v < 0);
+        expect(v).toBeLessThan(0);
     });
 
     it('works with various combinations of passing ttl to set', async () => {
@@ -102,10 +101,10 @@ describe('cacheManager promised', () => {
         const valu = { foo: 1 };
 
         await cache.set(key, valu, -1);
-        assert.strictEqual(await cache.get(key), undefined);
+        expect(await cache.get(key)).toBe(undefined);
 
         await cache.set(key, valu, { ttl: -1 });
-        assert.strictEqual(await cache.get(key), undefined);
+        expect(await cache.get(key)).toBe(undefined);
     });
 
     it('mget fetches array of multiple objects', async () => {
@@ -113,24 +112,35 @@ describe('cacheManager promised', () => {
         await cache.set('foo2', 2);
         await cache.set('foo3', 3);
         const rs = await cache.mget('foo1', 'foo2', 'foo3');
-        assert.deepEqual(rs, [1, 2, 3]);
+        expect(rs).toEqual([1, 2, 3]);
     });
 
     it('mget can handle options', async () => {
         const rs = await cache.mget('foo1', 'foo2', 'foo3', {});
-        assert.deepEqual(rs, [1, 2, 3]);
+        expect(rs).toEqual([1, 2, 3]);
     });
 
     it('mset sets multiple values in single call', async () => {
-        await cache.mset('goo1', 1, 'goo2', 2, 'goo3', 3);
+        await cache.mset([
+            ['goo1', 1],
+            ['goo2', 2],
+            ['goo3', 3],
+        ]);
         const rs = await cache.mget('goo1', 'goo2', 'goo3');
-        assert.deepEqual(rs, [1, 2, 3]);
+        expect(rs).toEqual([1, 2, 3]);
     });
 
     it('mset respects ttl if passed', async () => {
-        await cache.mset('too1', 1, 'too2', 2, 'too3', 3, { ttl: -1 });
+        await cache.mset(
+            [
+                ['too1', 1],
+                ['too2', 2],
+                ['too3', 3],
+            ],
+            { ttl: -1 }
+        );
         const rs = await cache.mget('too1', 'too2', 'too3');
-        assert.deepEqual(rs, [undefined, undefined, undefined]);
+        expect(rs).toEqual([undefined, undefined, undefined]);
     });
 });
 
@@ -142,44 +152,48 @@ describe('Sqlite failures', () => {
     let allSpy;
 
     beforeEach(() => {
-        allSpy = sinon.stub(sqlite3.Database.prototype, 'all');
-        allSpy.reset();
+        allSpy = vi.spyOn(Database.prototype, 'all');
+        allSpy.mockClear();
     });
 
     afterEach(() => {
-        allSpy.restore();
+        allSpy.mockRestore();
     });
 
     it('should fail get if sqlite errors out', async () => {
-        allSpy.yieldsRight(new Error('Fake error'));
+        allSpy.mockImplementation(() => Promise.reject(new Error('Fake error')));
         try {
             await cache.get('foo');
         } catch (e) {
-            assert.equal(e.message, 'Fake error');
+            expect(e.message).toBe('Fake error');
         }
     });
 
     it('should fail ttl if sqlite errors out', async () => {
-        allSpy.yieldsRight(new Error('Fake error'));
+        allSpy.mockImplementation(() => Promise.reject(new Error('Fake error')));
         try {
             await cache.ttl('foo');
         } catch (e) {
-            assert.equal(e.message, 'Fake error');
+            expect(e.message).toBe('Fake error');
         }
     });
 
     it('should return undefined value if stored value is junk', async () => {
         const ts = new Date().getTime();
-        allSpy.yieldsRight(null, [
-            { key: 'foo', val: '~junk~', created_at: ts, expire_at: ts + 36000 },
-        ]);
-        assert.strictEqual(await cache.get('foo'), undefined);
+        allSpy.mockImplementation(() =>
+            Promise.resolve([
+                { key: 'foo', val: '~junk~', created_at: ts, expire_at: ts + 36000 },
+            ])
+        );
+        expect(await cache.get('foo')).toBe(undefined);
 
-        allSpy.reset();
-        allSpy.yieldsRight(null, [
-            { key: 'foo', val: 'undefined', created_at: ts, expire_at: ts + 36000 },
-        ]);
-        assert.strictEqual(await cache.get('foo'), undefined);
+        allSpy.mockClear();
+        allSpy.mockImplementation(() =>
+            Promise.resolve([
+                { key: 'foo', val: 'undefined', created_at: ts, expire_at: ts + 36000 },
+            ])
+        );
+        expect(await cache.get('foo')).toBe(undefined);
     });
 });
 
@@ -196,7 +210,7 @@ describe('sqliteStore construction', () => {
         const valu = { foo: 1 };
 
         await cache.set(key, valu);
-        assert.strictEqual(await cache.get(key), undefined);
+        expect(await cache.get(key)).toBe(undefined);
     });
 });
 
@@ -207,7 +221,7 @@ describe('cacheManager callback', () => {
 
     it('get should return undefined when value does not exist', done => {
         cache.get('!!!' + Math.random(), (err, res) => {
-            assert.strictEqual(res, undefined);
+            expect(res).toBe(undefined);
             done(err);
         });
     });
@@ -237,7 +251,7 @@ describe('cacheManager callback', () => {
             }
 
             cache.mget('goo1', 'goo2', 'goo3', (err, res) => {
-                assert.deepEqual(res, [1, 2, 3]);
+                expect(res).toEqual([1, 2, 3]);
                 done(err);
             });
         });
