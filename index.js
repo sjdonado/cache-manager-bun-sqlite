@@ -1,13 +1,13 @@
-const sqlite = require('sqlite3')
-const util = require('util')
-
-const serializers = require('./serializers')
+import sqlite3 from 'sqlite3';
+import util from 'util';
+import { decode, encode } from 'cbor-x';
 
 const ConfigurePragmas = `
 PRAGMA main.synchronous = NORMAL;
 PRAGMA main.journal_mode = WAL2;
 PRAGMA main.auto_vacuum = INCREMENTAL;
-`
+`;
+
 const CreateTableStatement = `
 CREATE TABLE IF NOT EXISTS %s (
     key TEXT PRIMARY KEY, 
@@ -16,271 +16,174 @@ CREATE TABLE IF NOT EXISTS %s (
     expire_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS index_expire_%s ON %s(expire_at);
-`
-const SelectKeyStatementPrefix = "SELECT * FROM %s WHERE key IN "
-const DeleteStatement = "DELETE FROM %s WHERE key IN ($keys)"
-const TruncateStatement = "DELETE FROM %s"
-const PurgeExpiredStatement = "DELETE FROM %s WHERE expire_at < $ts"
-const UpsertManyStatementPrefix = "INSERT OR REPLACE INTO %s(key, val, created_at, expire_at) VALUES "
+`;
 
-function isObject(o) {
-    return o !== null && typeof o === 'object'
-}
+const DeleteStatement = 'DELETE FROM %s WHERE key IN (%s)';
+const TruncateStatement = 'DELETE FROM %s';
+const PurgeExpiredStatement = 'DELETE FROM %s WHERE expire_at < $ts';
+const UpsertManyStatementPrefix =
+  'INSERT OR REPLACE INTO %s(key, val, created_at, expire_at) VALUES ';
 
 function now() {
-    return new Date().getTime()
-}
-
-function liftFirst(type, ...args) {
-    return args.find(t => typeof t === type)
-}
-
-function liftCallback(...args) {
-    return liftFirst('function', ...args)
-}
-
-function tuplize(args, size) {
-    const ret = []
-    for (let i = 0; i <args.length; i += size) {
-        ret.push(args.slice(i, i + size))
-    }
-
-    return ret
+  return new Date().getTime();
 }
 
 function generatePlaceHolders(length) {
-    return '(' + ('?'.repeat(length).split('').join(', ')) + ')'
+  return '(' + '?'.repeat(length).split('').join(', ') + ')';
 }
 
-/**
- * Promisified allows `run` to execute in a promise agnostic way, allowing compatibility with callbacks.
- * This will allow us to act like callback async when callback is passed in `cb`, otherwise otherwise
- * returns a completable promise that is filled by `run`
- */
-function promisified(cb, run) {
-    if (cb) {
-        return run(cb)
-    }
+const serializers = {
+  json: {
+    serialize: o => JSON.stringify(o),
+    deserialize: p => JSON.parse(p),
+  },
+  cbor: {
+    serialize: o => encode(o),
+    deserialize: p => decode(p),
+  },
+};
 
-    return new Promise((ok, fail) => {
-        const pcb = (e, v) => e ? fail(e) : ok(v)
-        return run(pcb)
-    })
+class SqliteCacheStore {
+  constructor(config) {
+    const { name, path, serializer, ttl, flags, onOpen, onReady } = config;
+    this.name = name || 'cache';
+    this.path = path || ':memory:';
+    this.default_ttl = ttl || 24 * 60 * 60; // Default TTL in seconds
+    this.serializer = serializers[serializer || 'cbor'];
+    const mode = flags || sqlite3.OPEN_CREATE | sqlite3.OPEN_READWRITE;
+
+    this.db = new sqlite3.Database(this.path, mode, err => {
+      if (err) {
+        if (onOpen) onOpen(err);
+        return;
+      }
+      this.db.serialize(() => {
+        const stmt =
+          ConfigurePragmas +
+          util.format(CreateTableStatement, this.name, this.name, this.name);
+        this.db.exec(stmt, err => {
+          if (onReady) onReady(err);
+        });
+      });
+      if (onOpen) onOpen(null);
+    });
+
+    // Schedule periodic purge of expired entries
+    setInterval(
+      () => {
+        this.purgeExpired();
+      },
+      60 * 60 * 1000
+    ); // Every hour
+  }
+
+  async get(key, options) {
+    const ts = now();
+    const rows = await this._fetch_all([key]);
+    if (rows.length > 0 && rows[0].expire_at > ts) {
+      return this._deserialize(rows[0].val);
+    }
+    return undefined;
+  }
+
+  async set(key, value, options) {
+    const ttl = (options.ttl || this.default_ttl) * 1000;
+    const ts = now();
+    const expire = ts + ttl;
+    const val = this._serialize(value);
+    const stmt = util.format(
+      UpsertManyStatementPrefix + generatePlaceHolders(4),
+      this.name
+    );
+    await this._run(stmt, [key, val, ts, expire]);
+  }
+
+  async del(key) {
+    const stmt = util.format(DeleteStatement, this.name, '?');
+    await this._run(stmt, [key]);
+  }
+
+  async reset() {
+    const stmt = util.format(TruncateStatement, this.name);
+    await this._run(stmt, {});
+  }
+
+  async keys() {
+    const stmt = `SELECT key FROM ${this.name}`;
+    const rows = await this._all(stmt);
+    return rows.map(row => row.key);
+  }
+
+  async mset(pairs, options) {
+    const ttl = (options.ttl || this.default_ttl) * 1000;
+    const ts = now();
+    const expire = ts + ttl;
+    const bindings = pairs
+      .map(([key, value]) => [key, this._serialize(value), ts, expire])
+      .flat();
+    const placeholders = pairs.map(() => generatePlaceHolders(4)).join(', ');
+    const stmt = util.format(UpsertManyStatementPrefix + placeholders, this.name);
+    await this._run(stmt, bindings);
+  }
+
+  async mget(...keys) {
+    const ts = now();
+    const rows = await this._fetch_all(keys);
+    return rows.map(row => (row.expire_at > ts ? this._deserialize(row.val) : undefined));
+  }
+
+  async mdel(...keys) {
+    const placeholders = keys.map(() => '?').join(', ');
+    const stmt = util.format(DeleteStatement, this.name, placeholders);
+    await this._run(stmt, keys);
+  }
+
+  async _fetch_all(keys) {
+    const placeholders = keys.map(() => '?').join(', ');
+    const stmt = `SELECT * FROM ${this.name} WHERE key IN (${placeholders})`;
+    return this._all(stmt, keys);
+  }
+
+  async purgeExpired() {
+    const stmt = util.format(PurgeExpiredStatement, this.name);
+    await this._run(stmt, { $ts: now() });
+  }
+
+  _serialize(obj) {
+    try {
+      return this.serializer.serialize(obj);
+    } catch (e) {
+      return undefined;
+    }
+  }
+
+  _deserialize(payload) {
+    try {
+      return this.serializer.deserialize(payload);
+    } catch (e) {
+      return undefined;
+    }
+  }
+
+  _run(stmt, params) {
+    return new Promise((resolve, reject) => {
+      this.db.run(stmt, params, err => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+
+  _all(stmt, params) {
+    return new Promise((resolve, reject) => {
+      this.db.all(stmt, params, (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+  }
 }
 
-/**
- * @typedef {object} SqliteOpenOptions
- * @property {function} onOpen callback function when database open if failure or success
- * @property {function} onReady callback function when database table for key-value space has been created
- * @property {number} flags sqlite3 open flags for database file
- */
-
-class SqliteCacheAdapter {
-    /**
-     * @property {sqlite.Database} db for db instance
-     */
-    db = null
-
-    // Name of key-value space
-    #name = null
-
-    // Seralizer to serialize/deserialize payloads
-    #serializer = null
-
-    // TTL in seconds
-    #default_ttl = 24 * 60 * 60
-
-    /**
-     * @param {string} name of key-value space
-     * @param {string} path of database file
-     * @param {SqliteOpenOptions} options for opening database
-     */
-    constructor(name, path, options) {
-        const mode = options.flags || (sqlite.OPEN_CREATE | sqlite.OPEN_READWRITE)
-        const ser = options.serializer
-        this.#name = name
-        this.#default_ttl = typeof options.ttl === 'number' ? options.ttl : this.#default_ttl
-        this.#serializer = isObject(ser) ? ser : serializers[ser || 'cbor']
-
-        this.db = new sqlite.cached.Database(path, mode, options.onOpen)
-        this.db.serialize(() => {
-            const stmt = ConfigurePragmas + util.format(CreateTableStatement, name, name, name)
-            this.db.exec(stmt, options.onReady)
-        })
-    }
-
-    _fetch_all(keys, cb) {
-        this.db.serialize(() => {
-            const postFix = generatePlaceHolders(keys.length)
-            const stmt = util.format(SelectKeyStatementPrefix + postFix, this.#name)
-            this.db.all(stmt, keys, (err, rows) => {
-                if (err) {
-                    return cb(err)
-                }
-
-                cb(null, rows)
-            })
-        })
-    }
-
-    mget(...args) {
-        const callback = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
-        let options = {}
-        
-        if (isObject(args[args.length - 1])) {
-            options = args.pop()
-        }
-
-        const keys = args
-        return promisified(callback, cb => {
-            const ts = now()
-            this._fetch_all(keys, (err, rs) => {
-                if (err) {
-                    return cb(err)
-                }
-    
-                const rows = rs.filter(r => r.expire_at > ts)
-                
-                // Schedule cleanup for expired rows
-                if (rows.length < rs.length) {
-                    process.nextTick(() => this.#purgeExpired())
-                }
-
-                return cb(null, rs.map(r => r.expire_at > ts ? this.#deserialize(r.val) : undefined))
-            })
-        })
-    }
-
-    mset(...args) {
-        /* 
-        This function does the awkward juggling with because mset instead of taking sane way of having
-        key value pairs as object or nested pairs is flattened in array. What does that mean? 
-        your arguments can will be:
-            key1, value1, key2, value2 .... [options, [callback]]
-        IDK what were authors smoking when coming up with this design but it is what it is.
-        */
-        const callback = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
-        let options = {}
-        
-        if (args.length % 2 > 0 && isObject(args[args.length - 1])) {
-            options = args.pop()
-        }
-
-        const tuples = tuplize(args, 2)
-        return promisified(callback, cb => {
-            const ttl = (options.ttl || this.#default_ttl) * 1000
-            const ts = now()
-            const expire = ts + ttl            
-            const binding = tuples.map(t => [t[0], this.#serialize(t[1]), ts, expire])
-                                  .filter(t => t[1] !== undefined)
-                                  .flatMap(t => t)
-            const postfix = tuples.map(d => generatePlaceHolders(d.length + 2)).join(', ')
-            const stmt = util.format(UpsertManyStatementPrefix + postfix, this.#name)
-
-            this.db.run(stmt, binding, function (err) {
-                return cb(err, tuples.length == binding.length)
-            })
-        })
-    }
-
-    get(key, options, callback) {
-        return promisified(liftCallback(options, callback), cb => {
-            const opts = liftFirst('object', options) || {}
-            this.mget(key, opts, (err, rows) => {
-                if (err) {
-                    return cb(err)
-                }
-
-                return cb(null, rows[0])
-            })
-        })
-    }
-
-    set(key, value, ttl, options, callback) {
-        callback = liftCallback(ttl, options, callback)
-        options = liftFirst('object', ttl, options) || {}
-        ttl = (liftFirst('number', ttl) || options.ttl || this.#default_ttl)
-
-        if (callback) {
-            return this.mset(key, value, {...options, ttl}, callback)
-        }
-        
-        return this.mset(key, value, {...options, ttl})
-    }
-
-    del(key, options, callback) {
-        return promisified(liftCallback(options, callback), cb => {
-            this.db.serialize(() => {
-                const stmt = util.format(DeleteStatement, this.#name)
-                const binding = {$keys: [key]}
-    
-                this.db.run(stmt, binding, function (err) {
-                    cb(err)
-                })
-            })
-        })
-    }
-
-    reset(callback) {
-        return promisified(liftCallback(callback), cb => {
-            this.db.serialize(() => {
-                const stmt = util.format(TruncateStatement, this.#name)
-                this.db.run(stmt, {}, function (err) {
-                    cb(err)
-                })
-            })
-        })
-    }
-
-    ttl(key, callback) {
-        return promisified(callback, cb => {
-            this._fetch_all([key], (err, rows) => {
-                if (err) {
-                    return cb(err)
-                }
-
-                if (rows.length < 1) {
-                    return cb(null, -1)
-                }
-    
-                cb(null, rows[0].expire_at - now())
-            })
-        })
-    }
-
-    #serialize(obj) {
-        try {
-            return this.#serializer.serialize(obj)
-        } catch(e) {
-            return undefined
-        }
-    }
-
-    #deserialize(payload) {
-        try {
-            return this.#serializer.deserialize(payload)
-        } catch(e) {
-            return undefined
-        }
-    }
-
-    #purgeExpired() {
-        this.db.serialize(() => {
-            const stmt = util.format(PurgeExpiredStatement, this.#name)
-            const ts = now()
-            this.db.run(stmt, {$ts: ts})
-        })
-    }
-}
-
-/**
- * @typedef {object} SqliteCacheAdapterArgs
- * @property {string} name of key-value space
- * @property {string} path of database
- * @property {SqliteOpenOptions} flags sqlite3 open flags for database file
- */
-module.exports = {
-    create: function (args) {
-        return new SqliteCacheAdapter(args.name || 'kv', args.path || ':memory:', args.options || {})
-    }
-}
+export default {
+  create: config => new SqliteCacheStore(config),
+};
