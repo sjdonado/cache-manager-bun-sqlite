@@ -7,7 +7,7 @@
 ## Installation
 
 ```
-npm i cache-manager-bun-sqlite
+bun add cache-manager-bun-sqlite3
 ```
 
 ## Usage
@@ -15,14 +15,13 @@ npm i cache-manager-bun-sqlite
 ### Single store
 
 ```ts
-import
 import cacheManager from 'cache-manager';
-import bunSqliteStore from 'cache-manager-bun-sqlite';
+import bunSqliteStore from 'cache-manager-bun-sqlite3';
 
 // SQLite :memory: cache store
 cache = await cacheManager.caching(bunSqliteStore, {
-    serializer: 'json', // default is 'cbor'
-    ttl: 20, // TTL in seconds
+  serializer: 'json', // default is 'cbor'
+  ttl: 20, // TTL in seconds
 });
 
 // On-disk cache on employees table
@@ -44,7 +43,7 @@ const value = await cache.get('foo');
 
 ```ts
 import cacheManager from 'cache-manager';
-import bunSqliteStore from 'cache-manager-bun-sqlite';
+import bunSqliteStore from 'cache-manager-bun-sqlite3';
 import redisStore from 'cache-manager-ioredis';
 
 const redisCache = await cacheManager.caching({ store: redisStore, db: 0, ttl: 600 });

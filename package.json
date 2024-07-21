@@ -1,5 +1,5 @@
 {
-  "name": "cache-manager-bun-sqlite",
+  "name": "cache-manager-bun-sqlite3",
   "version": "0.1.0",
   "description": "Bun sqlite store for node-cache-manager",
   "type": "module",
