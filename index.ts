@@ -54,7 +54,7 @@ export class NoCacheableError implements Error {
   constructor(public message: string) { }
 }
 
-export default async function createSqliteStore({
+export default async function bunSqliteStore({
   name = 'cache',
   path = ':memory:',
   serializer = 'cbor',
@@ -101,7 +101,7 @@ export default async function createSqliteStore({
   };
 
   const set = async (key: string, value: unknown, ttl?: number) => {
-    const ttlValue = ttl !== undefined ? ttl : defaultTtl;
+    const ttlValue = ttl !== undefined ? ttl * 1000 : defaultTtl;
     if (ttlValue < 0) {
       return;
     }
@@ -120,7 +120,7 @@ export default async function createSqliteStore({
   };
 
   const mset = async (pairs: [string, unknown][], ttl?: number) => {
-    const ttlValue = ttl !== undefined ? ttl : defaultTtl;
+    const ttlValue = ttl !== undefined ? ttl * 1000 : defaultTtl;
     if (ttlValue < 0) {
       return;
     }

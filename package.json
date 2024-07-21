@@ -2,7 +2,6 @@
   "name": "cache-manager-bun-sqlite",
   "version": "0.1.0",
   "description": "Bun sqlite store for node-cache-manager",
-  "main": "index.js",
   "type": "module",
   "repository": {
     "type": "git",
@@ -10,7 +9,7 @@
   },
   "keywords": [
     "cache-manager",
-    "sqlite"
+    "bun-sqlite"
   ],
   "author": "Juan Rodriguez",
   "license": "MIT",
