@@ -1,0 +1,101 @@
+import { describe, it, expect, beforeEach } from 'bun:test';
+import cacheManager from 'cache-manager';
+import type { MultiCache } from 'cache-manager';
+
+import sqliteStore from '../index.js';
+import { getRandomPath } from './helpers/index.js';
+
+describe('Multi caching', () => {
+  let cache: MultiCache;
+
+  beforeEach(async () => {
+    cache = cacheManager.multiCaching([
+      await cacheManager.caching(sqliteStore, { path: getRandomPath(), ttl: 500 }),
+    ]);
+  });
+
+  it('should not get value when TTL is negative', async () => {
+    const key = 'foo' + Date.now();
+    const value = { foo: 1 };
+
+    await cache.set(key, value, -200);
+    const response = await cache.get(key);
+    expect(response).toBe(undefined);
+  });
+
+  it('should read saved value', async () => {
+    const key = 'foo' + Date.now();
+    const value = { foo: 1 };
+
+    await cache.set(key, value);
+    const response = await cache.get(key);
+    expect(response).toEqual(value);
+  });
+
+  it('should respect default TTL', async () => {
+    const key = 'foo' + Date.now();
+    const value = { foo: 1 };
+
+    await cache.set(key, value);
+    await new Promise(resolve => setTimeout(resolve, 600));
+
+    const response = await cache.get(key);
+    expect(response).toEqual(value);
+  });
+
+  it('should not error on deleting non-existent key', async () => {
+    const key = 'foo' + Date.now();
+    await cache.del(key);
+  });
+
+  it('should remove existing key with del', async () => {
+    const key = 'foo' + Date.now();
+    const value = { foo: 1 };
+
+    await cache.set(key, value);
+    await cache.del(key);
+    const v = await cache.get(key);
+    expect(v).toBe(undefined);
+  });
+
+  it('should truncate database on reset', async () => {
+    const key = 'foo' + Date.now();
+    const value = { foo: 1 };
+
+    await cache.set(key, value);
+    await cache.reset();
+    const v = await cache.get(key);
+    expect(v).toBe(undefined);
+  });
+
+  it('should fetch array of multiple objects with mget', async () => {
+    await cache.set('foo1', 1);
+    await cache.set('foo2', 2);
+    await cache.set('foo3', 3);
+    const rs = await cache.mget('foo1', 'foo2', 'foo3');
+    expect(rs).toEqual([1, 2, 3]);
+  });
+
+  it('should set multiple values with mset', async () => {
+    await cache.mset([
+      ['goo1', 1],
+      ['goo2', 2],
+      ['goo3', 3],
+    ]);
+    const rs = await cache.mget('goo1', 'goo2', 'goo3');
+    expect(rs).toEqual([1, 2, 3]);
+  });
+
+  it('should respect TTL in mset', async () => {
+    await cache.mset(
+      [
+        ['too1', 1],
+        ['too2', 2],
+        ['too3', 3],
+      ],
+      -1
+    );
+    const rs = await cache.mget('too1', 'too2', 'too3');
+    expect(rs).toEqual([undefined, undefined, undefined]);
+  });
+});

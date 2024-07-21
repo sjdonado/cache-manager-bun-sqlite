@@ -58,13 +58,14 @@ export default async function createSqliteStore({
   name = 'cache',
   path = ':memory:',
   serializer = 'cbor',
-  ttl = 24 * 60 * 60,
+  ttl = 24 * 60 * 60, // 1 day in seconds
   ...options
 }: SqliteCacheOptions = {}): Promise<SqliteStore> {
-  // Added default value for destructuring
   const db = new Database(path);
   const serializerAdapter = serializers[serializer];
   const defaultTtl = ttl * 1000;
+
+  let lastPurgeTime = 0;
 
   try {
     db.exec(configurePragmas);
@@ -75,23 +76,40 @@ export default async function createSqliteStore({
   }
 
   const isCacheable =
-    options?.isCacheable || (value => value !== undefined && value !== null);
+    options?.isCacheable ||
+    (value => value !== undefined && value !== null && typeof value !== 'function');
+
+  const purgeExpired = async () => {
+    const now = Date.now();
+    if (now - lastPurgeTime >= 60 * 60 * 1000) {
+      // One hour
+      const statement = db.prepare(`DELETE FROM ${name} WHERE expire_at < ?`);
+      statement.run(now);
+      lastPurgeTime = now;
+    }
+  };
 
   const get = async <T>(key: string): Promise<T | undefined> => {
-    const statement = db.prepare(`SELECT * FROM ${name} WHERE key = ?`);
-
-    const rows = statement.all(key) as CacheRow[];
-    if (rows.length > 0 && rows[0].expire_at > Date.now()) {
+    await purgeExpired();
+    const statement = db.prepare(
+      `SELECT * FROM ${name} WHERE key = ? AND expire_at > ? LIMIT 1`
+    );
+    const rows = statement.all(key, Date.now()) as CacheRow[];
+    if (rows.length > 0) {
       return serializerAdapter.deserialize(rows[0].val) as T;
     }
   };
 
-  const set = async (key: string, value: unknown, options?: { ttl?: number }) => {
+  const set = async (key: string, value: unknown, ttl?: number) => {
+    const ttlValue = ttl !== undefined ? ttl : defaultTtl;
+    if (ttlValue < 0) {
+      return;
+    }
+
     if (!isCacheable(value)) {
       throw new NoCacheableError(`"${value}" is not a cacheable value`);
     }
 
-    const ttlValue = options?.ttl || defaultTtl;
     const expireAt = Date.now() + ttlValue;
     const serializedVal = serializerAdapter.serialize(value);
 
@@ -101,11 +119,14 @@ export default async function createSqliteStore({
     statement.run(key, serializedVal, Date.now(), expireAt);
   };
 
-  const mset = async (pairs: [string, unknown][], options?: { ttl?: number }) => {
-    const ttlValue = options?.ttl || defaultTtl;
+  const mset = async (pairs: [string, unknown][], ttl?: number) => {
+    const ttlValue = ttl !== undefined ? ttl : defaultTtl;
+    if (ttlValue < 0) {
+      return;
+    }
     const expireAt = Date.now() + ttlValue;
 
-    const stmt = `INSERT OR REPLACE INTO ${name}(key, val, created_at, expire_at) VALUES ${pairs.map(() => '(?, ?, ?, ?)').join(', ')}`;
+    const stmt = `INSERT OR REPLACE INTO ${name} (key, val, created_at, expire_at) VALUES ${pairs.map(() => '(?, ?, ?, ?)').join(', ')}`;
     const bindings = pairs.flatMap(([key, value]) => {
       if (!isCacheable(value)) {
         throw new NoCacheableError(`"${value}" is not a cacheable value`);
@@ -118,15 +139,16 @@ export default async function createSqliteStore({
   };
 
   const mget = async <T>(...keys: string[]): Promise<(T | undefined)[]> => {
+    await purgeExpired();
     const placeholders = keys.map(() => '?').join(', ');
-    const statement = db.prepare(`SELECT * FROM ${name} WHERE key IN (${placeholders})`);
-    const rows = statement.all(...keys) as CacheRow[];
+    const statement = db.prepare(
+      `SELECT * FROM ${name} WHERE key IN (${placeholders}) AND expire_at > ?`
+    );
+    const rows = statement.all(...keys, Date.now()) as CacheRow[];
 
     return keys.map(key => {
       const row = rows.find(r => r.key === key);
-      return row && row.expire_at > Date.now()
-        ? (serializerAdapter.deserialize(row.val) as T)
-        : undefined;
+      return row ? (serializerAdapter.deserialize(row.val) as T) : undefined;
     });
   };
 
@@ -142,6 +164,7 @@ export default async function createSqliteStore({
   };
 
   const keys = async (): Promise<string[]> => {
+    await purgeExpired();
     const statement = db.prepare(`SELECT key FROM ${name}`);
     const rows = statement.all() as CacheRow[];
     return rows.map(row => row.key);
@@ -153,6 +176,7 @@ export default async function createSqliteStore({
   };
 
   const ttlFn = async (key: string): Promise<number> => {
+    await purgeExpired();
     const statement = db.prepare(`SELECT expire_at FROM ${name} WHERE key = ?`);
     const rows = statement.all(key) as CacheRow[];
     if (rows.length > 0) {
@@ -160,13 +184,6 @@ export default async function createSqliteStore({
     }
     return -1;
   };
-
-  const purgeExpired = async () => {
-    const statement = db.prepare(`DELETE FROM ${name} WHERE expire_at < ?`);
-    statement.run(Date.now());
-  };
-
-  setInterval(purgeExpired, 60 * 60 * 1000); // Every hour
 
   return {
     name,
