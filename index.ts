@@ -89,17 +89,6 @@ export default async function bunSqliteStore({
     }
   };
 
-  const get = async <T>(key: string): Promise<T | undefined> => {
-    await purgeExpired();
-    const statement = db.prepare(
-      `SELECT * FROM ${name} WHERE key = ? AND expire_at > ? LIMIT 1`
-    );
-    const rows = statement.all(key, Date.now()) as CacheRow[];
-    if (rows.length > 0) {
-      return serializerAdapter.deserialize(rows[0].val) as T;
-    }
-  };
-
   const set = async (key: string, value: unknown, ttl?: number) => {
     const ttlValue = ttl !== undefined ? ttl * 1000 : defaultTtl;
     if (ttlValue < 0) {
@@ -117,6 +106,22 @@ export default async function bunSqliteStore({
       `INSERT OR REPLACE INTO ${name}(key, val, created_at, expire_at) VALUES (?, ?, ?, ?)`
     );
     statement.run(key, serializedVal, Date.now(), expireAt);
+  };
+
+  const get = async <T>(key: string): Promise<T | undefined> => {
+    await purgeExpired();
+    const statement = db.prepare(
+      `SELECT * FROM ${name} WHERE key = ? AND expire_at > ? LIMIT 1`
+    );
+    const rows = statement.all(key, Date.now()) as CacheRow[];
+    if (rows.length > 0) {
+      return serializerAdapter.deserialize(rows[0].val) as T;
+    }
+  };
+
+  const del = async (key: string) => {
+    const statement = db.prepare(`DELETE FROM ${name} WHERE key = ?`);
+    statement.run(key);
   };
 
   const mset = async (pairs: [string, unknown][], ttl?: number) => {
@@ -150,11 +155,6 @@ export default async function bunSqliteStore({
       const row = rows.find(r => r.key === key);
       return row ? (serializerAdapter.deserialize(row.val) as T) : undefined;
     });
-  };
-
-  const del = async (key: string) => {
-    const statement = db.prepare(`DELETE FROM ${name} WHERE key = ?`);
-    statement.run(key);
   };
 
   const mdel = async (...keys: string[]) => {
