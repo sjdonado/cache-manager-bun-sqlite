@@ -1,4 +1,9 @@
 node_modules
+
+.nyc_output
+coverage
+
 tests
+
 bunfig.toml
 .prettierrc.json

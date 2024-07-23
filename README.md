@@ -2,7 +2,8 @@
 
 - Runs on top of [bun-sqlite](https://bun.sh/docs/api/sqlite)
 - Optimized `mset`/`mget` support
-- Supports CBOR for efficient and fast storage (selectable between `json` or `cbor`, default: `cbor`)
+- Multiple encoders support: `msgpackr`, `cbor`, `json`
+- Auto purge (clean expired records every hour)
 
 ## Installation
 
@@ -20,7 +21,7 @@ import bunSqliteStore from 'cache-manager-bun-sqlite3';
 
 // SQLite :memory: cache store
 cache = await cacheManager.caching(bunSqliteStore, {
-  serializer: 'json', // default is 'cbor'
+  serializer: 'json', // default is 'msgpackr'
   ttl: 20, // TTL in seconds
 });
 
@@ -31,11 +32,11 @@ const cache = await cacheManager.caching(bunSqliteStore, {
 });
 
 // TTL in seconds
-await cache.set('foo', { test: 'bar' }, 600);
+await cache.set('foo', { test: 'bar' }, 30);
 const value = await cache.get('foo');
 
 // TTL in seconds
-await cache.set('foo', { test: 'bar' }, 600);
+await cache.set('foo', { test: 'bar' }, 30);
 const value = await cache.get('foo');
 ```
 
@@ -75,6 +76,4 @@ await multiCache.mset('foo1', 'bar1', 'foo3', 'bar3', customTTL);
 await multiCache.mget('foo1', 'foo3');
 ```
 
-## Fork from
-
-[node-cache-manager-sqlite](https://github.com/maxpert/node-cache-manager-sqlite)
+Fork from [node-cache-manager-sqlite](https://github.com/maxpert/node-cache-manager-sqlite)

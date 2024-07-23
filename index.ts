@@ -1,6 +1,8 @@
 import { Database } from 'bun:sqlite';
-import { decode, encode } from 'cbor-x';
 import type { Store, Config } from 'cache-manager';
+
+import * as cbor from 'cbor-x';
+import * as msgpackr from 'msgpackr';
 
 const configurePragmas = `
 PRAGMA main.synchronous = NORMAL;
@@ -31,15 +33,19 @@ const serializers = {
     deserialize: JSON.parse,
   },
   cbor: {
-    serialize: encode,
-    deserialize: decode,
+    serialize: cbor.encode,
+    deserialize: cbor.decode,
+  },
+  msgpackr: {
+    serialize: msgpackr.pack,
+    deserialize: msgpackr.unpack,
   },
 };
 
 type SqliteCacheOptions = Config & {
   name?: string;
   path?: string;
-  serializer?: 'json' | 'cbor';
+  serializer?: 'msgpackr' | 'cbor' | 'json';
   ttl?: number;
 };
 
@@ -51,13 +57,13 @@ export interface SqliteStore extends Store {
 
 export class NoCacheableError implements Error {
   name = 'NoCacheableError';
-  constructor(public message: string) { }
+  constructor(public message: string) {}
 }
 
 export default async function bunSqliteStore({
   name = 'cache',
   path = ':memory:',
-  serializer = 'cbor',
+  serializer = 'msgpackr',
   ttl = 24 * 60 * 60, // 1 day in seconds
   ...options
 }: SqliteCacheOptions = {}): Promise<SqliteStore> {
@@ -200,5 +206,5 @@ export default async function bunSqliteStore({
     get client() {
       return db;
     },
-  } as SqliteStore;
+  };
 }
